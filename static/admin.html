@@ -25,24 +25,30 @@
         <form id="uploadForm">
             <div class="form-group">
                 <label>Kelas / Grade:</label>
-                <select id="grade" required>
-                    <option value="Kelas 1">Kelas 1</option>
-                    <option value="Kelas 2">Kelas 2</option>
-                    <option value="Kelas 3">Kelas 3</option>
-                    <option value="Kelas 4">Kelas 4</option>
-                    <option value="Kelas 5" selected>Kelas 5</option>
-                    <option value="Kelas 6">Kelas 6</option>
-                </select>
+                <input type="text" id="grade" list="gradeList" placeholder="Ketik atau pilih (misal: Kelas 5)" required>
+                <datalist id="gradeList">
+                    <option value="Kelas 1">
+                    <option value="Kelas 2">
+                    <option value="Kelas 3">
+                    <option value="Kelas 4">
+                    <option value="Kelas 5">
+                    <option value="Kelas 6">
+                </datalist>
             </div>
             <div class="form-group">
                 <label>Mata Pelajaran:</label>
-                <select id="subject" required>
-                    <option value="IPA">IPA</option>
-                    <option value="Matematika">Matematika</option>
-                    <option value="Bahasa Indonesia">Bahasa Indonesia</option>
-                    <option value="IPS">IPS</option>
-                    <option value="Bahasa Inggris">Bahasa Inggris</option>
-                </select>
+                <input type="text" id="subject" list="subjectList" placeholder="Ketik bebas atau pilih (misal: PAI, PJOK, IPA)" required>
+                <datalist id="subjectList">
+                    <option value="IPA">
+                    <option value="Matematika">
+                    <option value="Bahasa Indonesia">
+                    <option value="IPS">
+                    <option value="Bahasa Inggris">
+                    <option value="PAI">
+                    <option value="Pancasila / PPKn">
+                    <option value="PJOK">
+                    <option value="Seni Budaya">
+                </datalist>
             </div>
             <div class="form-group">
                 <label>Semester:</label>
