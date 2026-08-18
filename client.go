@@ -1,117 +1,92 @@
 package main
 
 import (
-	"crypto/rand"
-	"encoding/hex"
 	"encoding/json"
-	"github.com/gorilla/websocket"
-	"strings"
+	"log"
 	"time"
+
+	"github.com/gorilla/websocket"
 )
 
+const (
+	writeWait      = 10 * time.Second
+	pongWait       = 60 * time.Second
+	pingPeriod     = (pongWait * 9) / 10
+	maxMessageSize = 1024
+)
+
+type WSMessage struct {
+	Type    string          `json:"type"`
+	Payload json.RawMessage `json:"payload"`
+}
+
 type Client struct {
-	Conn   *websocket.Conn
-	SendQ  chan any
-	Room   *Room
-	Player *Player
-	Role   string
-	App    *App
+	hub      *Hub
+	conn     *websocket.Conn
+	send     chan []byte
+	roomCode string
+	name     string
+	isHost   bool
 }
 
 func (c *Client) readPump() {
 	defer func() {
-		c.Conn.Close()
-		if c.Player != nil {
-			c.Room.mu.Lock()
-			delete(c.Room.Players, c.Player.ID)
-			c.Room.mu.Unlock()
-			c.Room.broadcast(map[string]any{"type": "lobby", "players": c.RoomPlayers()})
-		}
+		c.hub.unregister <- c
+		c.conn.Close()
 	}()
-	c.Conn.SetReadLimit(64 << 10)
-	c.Conn.SetReadDeadline(time.Now().Add(60 * time.Second))
-	c.Conn.SetPongHandler(func(string) error { c.Conn.SetReadDeadline(time.Now().Add(60 * time.Second)); return nil })
+
+	c.conn.SetReadLimit(maxMessageSize)
+	c.conn.SetReadDeadline(time.Now().Add(pongWait))
+	c.conn.SetPongHandler(func(string) error {
+		c.conn.SetReadDeadline(time.Now().Add(pongWait))
+		return nil
+	})
+
 	for {
-		_, b, e := c.Conn.ReadMessage()
-		if e != nil {
-			return
+		_, message, err := c.conn.ReadMessage()
+		if err != nil {
+			break
 		}
-		var m struct {
-			Type, Name, PIN string
-			Index           int
-		}
-		if json.Unmarshal(b, &m) != nil {
+
+		var msg WSMessage
+		if err := json.Unmarshal(message, &msg); err != nil {
 			continue
 		}
-		switch m.Type {
-		case "join":
-			if m.Name == "" {
-				c.sendError("name required")
-				continue
-			}
-			p := &Player{ID: randomID(), Name: safeName(m.Name), Client: c}
-			c.Player = p
-			c.Room.mu.Lock()
-			c.Room.Players[p.ID] = p
-			c.Room.mu.Unlock()
-			c.Send(map[string]any{"type": "joined", "player_id": p.ID, "room": publicRoom(c.Room)})
-			c.Room.broadcast(map[string]any{"type": "lobby", "players": c.RoomPlayers()})
-		case "start":
-			if c.Role == "host" {
-				c.App.startRoom(c.Room)
-			}
-		case "next":
-			if c.Role == "host" {
-				c.App.nextQuestion(c.Room)
-			}
-		case "answer":
-			if c.Player != nil {
-				elapsed := time.Since(c.Room.QuestionStarted).Milliseconds()
-				c.App.answer(c.Room, c.Player, m.Index, elapsed)
-			}
-		}
+
+		c.hub.handleMessage(c, &msg)
 	}
 }
+
 func (c *Client) writePump() {
-	t := time.NewTicker(25 * time.Second)
-	defer func() { t.Stop(); c.Conn.Close() }()
+	ticker := time.NewTicker(pingPeriod)
+	defer func() {
+		ticker.Stop()
+		c.conn.Close()
+	}()
+
 	for {
 		select {
-		case v := <-c.SendQ:
-			b, _ := json.Marshal(v)
-			c.Conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
-			if c.Conn.WriteMessage(websocket.TextMessage, b) != nil {
+		case message, ok := <-c.send:
+			c.conn.SetWriteDeadline(time.Now().Add(writeWait))
+			if !ok {
+				c.conn.WriteMessage(websocket.CloseMessage, []byte{})
 				return
 			}
-		case <-t.C:
-			c.Conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
-			if c.Conn.WriteMessage(websocket.PingMessage, nil) != nil {
+
+			w, err := c.conn.NextWriter(websocket.TextMessage)
+			if err != nil {
+				return
+			}
+			w.Write(message)
+
+			if err := w.Close(); err != nil {
+				return
+			}
+		case <-ticker.C:
+			c.conn.SetWriteDeadline(time.Now().Add(writeWait))
+			if err := c.conn.WriteMessage(websocket.PingMessage, nil); err != nil {
 				return
 			}
 		}
 	}
-}
-func (c *Client) Send(v any) {
-	select {
-	case c.SendQ <- v:
-	default:
-	}
-}
-func (c *Client) sendError(s string) { c.Send(map[string]any{"type": "error", "message": s}) }
-func (c *Client) RoomPlayers() []map[string]any {
-	c.Room.mu.Lock()
-	defer c.Room.mu.Unlock()
-	o := []map[string]any{}
-	for _, p := range c.Room.Players {
-		o = append(o, map[string]any{"id": p.ID, "name": p.Name, "score": p.Score, "correct": p.Correct})
-	}
-	return o
-}
-func randomID() string { b := make([]byte, 8); rand.Read(b); return hex.EncodeToString(b) }
-func safeName(s string) string {
-	s = strings.TrimSpace(s)
-	if len(s) > 40 {
-		s = s[:40]
-	}
-	return s
 }

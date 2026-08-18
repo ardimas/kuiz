@@ -1,105 +1,82 @@
 package main
 
 import (
-	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
-	"time"
+	"log"
+	"os"
 
-	_ "github.com/jackc/pgx/v5/stdlib"
+	_ "github.com/lib/pq"
 )
 
-type DB struct {
-	SQL *sql.DB
+var db *sql.DB
+
+type Soal struct {
+	ID               int64    `json:"id"`
+	Grade            string   `json:"grade"`
+	Subject          string   `json:"subject"`
+	Semester         int      `json:"semester"`
+	ChapterNum       int      `json:"chapter_num"`
+	ChapterTitle     string   `json:"chapter_title"`
+	Question         string   `json:"question"`
+	Options          []string `json:"options"`
+	CorrectAnswerIdx int      `json:"correct_answer_idx"`
+	TimeLimit        int      `json:"time_limit"`
 }
 
-func NewDB(ctx context.Context, dsn string) (*DB, error) {
-	if dsn == "" {
-		return nil, fmt.Errorf("DATABASE_URL is required")
+func initDB() {
+	dbURL := os.Getenv("DATABASE_URL")
+	if dbURL == "" {
+		log.Fatal("DATABASE_URL environment variable is required")
 	}
 
-	d, err := sql.Open("pgx", dsn)
+	var err error
+	db, err = sql.Open("postgres", dbURL)
 	if err != nil {
-		return nil, err
+		log.Fatalf("Gagal konek ke database: %v", err)
 	}
 
-	d.SetMaxOpenConns(10)
-	d.SetMaxIdleConns(5)
-	d.SetConnMaxLifetime(30 * time.Minute)
-
-	if err := d.PingContext(ctx); err != nil {
-		d.Close()
-		return nil, err
+	if err = db.Ping(); err != nil {
+		log.Fatalf("Database tidak merespon: %v", err)
 	}
 
-	return &DB{SQL: d}, nil
+	log.Println("Berhasil terhubung ke Supabase PostgreSQL!")
 }
 
-func (d *DB) Close() error {
-	return d.SQL.Close()
+func getSitePasscodeFromDB() string {
+	var passcode string
+	err := db.QueryRow("SELECT value FROM settings WHERE key = 'site_passcode'").Scan(&passcode)
+	if err != nil {
+		return "BELAJAR2026" // Default fallback
+	}
+	return passcode
 }
 
-type Question struct {
-	ID           int64    `json:"id"`
-	Grade        string   `json:"grade"`
-	Subject      string   `json:"subject"`
-	Semester     int      `json:"semester"`
-	ChapterNo    int      `json:"chapter_no"`
-	ChapterTitle string   `json:"chapter_title"`
-	Question     string   `json:"question"`
-	Options      []string `json:"options"`
-	CorrectIndex int      `json:"correct_index"`
-	TimeLimitMs  int      `json:"time_limit_ms"`
+func updateSitePasscodeInDB(newPasscode string) error {
+	_, err := db.Exec("INSERT INTO settings (key, value) VALUES ('site_passcode', $1) ON CONFLICT (key) DO UPDATE SET value = $1, updated_at = NOW()", newPasscode)
+	return err
 }
 
-type GeneratedQuestion struct {
-	Question     string   `json:"question"`
-	Options      []string `json:"options"`
-	CorrectIndex int      `json:"correct_index"`
-	TimeLimitMs  int      `json:"time_limit_ms"`
-}
-
-func (d *DB) InsertQuestions(
-	ctx context.Context,
-	g, s string,
-	sem, ch int,
-	title, src string,
-	qs []GeneratedQuestion,
-) error {
-	tx, err := d.SQL.BeginTx(ctx, nil)
+func saveSoalBatch(soalList []Soal) error {
+	tx, err := db.Begin()
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
 
-	for _, q := range qs {
-		if len(q.Options) != 4 {
-			return fmt.Errorf("AI returned invalid options")
+	stmt, err := tx.Prepare(`INSERT INTO soal (grade, subject, semester, chapter_num, chapter_title, question, options, correct_answer_idx, time_limit) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`)
+	if err != nil {
+		return err
+	}
+	defer stmt.Close()
+
+	for _, s := range soalList {
+		optsJSON, err := json.Marshal(s.Options)
+		if err != nil {
+			return err
 		}
-
-		_, err = tx.ExecContext(
-			ctx,
-			`INSERT INTO soal
-			(grade, subject, semester, chapter_no, chapter_title,
-			 question, option_a, option_b, option_c, option_d,
-			 correct_index, time_limit_ms, source_file)
-			VALUES
-			($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`,
-			g,
-			s,
-			sem,
-			ch,
-			title,
-			q.Question,
-			q.Options[0],
-			q.Options[1],
-			q.Options[2],
-			q.Options[3],
-			q.CorrectIndex,
-			q.TimeLimitMs,
-			src,
-		)
-
+		_, err = stmt.Exec(s.Grade, s.Subject, s.Semester, s.ChapterNum, s.ChapterTitle, s.Question, optsJSON, s.CorrectAnswerIdx, s.TimeLimit)
 		if err != nil {
 			return err
 		}
@@ -108,162 +85,48 @@ func (d *DB) InsertQuestions(
 	return tx.Commit()
 }
 
-func (d *DB) GetQuestions(
-	ctx context.Context,
-	g, s string,
-	sem, chap *int,
-) ([]Question, error) {
-	args := []any{g, s}
+func fetchSoalFiltered(grade, subject, mode string, semester, chapter int) ([]Soal, error) {
+	var query string
+	var args []interface{}
 
-	where := "grade=$1 AND subject=$2"
-	n := 3
-
-	if sem != nil {
-		where += fmt.Sprintf(" AND semester=$%d", n)
-		args = append(args, *sem)
-		n++
+	switch mode {
+	case "chapter":
+		query = `SELECT id, grade, subject, semester, chapter_num, chapter_title, question, options, correct_answer_idx, time_limit 
+                 FROM soal WHERE grade=$1 AND subject=$2 AND semester=$3 AND chapter_num=$4 ORDER BY RANDOM()`
+		args = []interface{}{grade, subject, semester, chapter}
+	case "sem1":
+		query = `SELECT id, grade, subject, semester, chapter_num, chapter_title, question, options, correct_answer_idx, time_limit 
+                 FROM soal WHERE grade=$1 AND subject=$2 AND semester=1 ORDER BY RANDOM()`
+		args = []interface{}{grade, subject}
+	case "sem2":
+		query = `SELECT id, grade, subject, semester, chapter_num, chapter_title, question, options, correct_answer_idx, time_limit 
+                 FROM soal WHERE grade=$1 AND subject=$2 AND semester=2 ORDER BY RANDOM()`
+		args = []interface{}{grade, subject}
+	case "full":
+		query = `SELECT id, grade, subject, semester, chapter_num, chapter_title, question, options, correct_answer_idx, time_limit 
+                 FROM soal WHERE grade=$1 AND subject=$2 ORDER BY RANDOM()`
+		args = []interface{}{grade, subject}
+	default:
+		return nil, fmt.Errorf("mode filter tidak valid")
 	}
 
-	if chap != nil {
-		where += fmt.Sprintf(" AND chapter_no=$%d", n)
-		args = append(args, *chap)
-	}
-
-	rows, err := d.SQL.QueryContext(
-		ctx,
-		`SELECT
-			id,
-			grade,
-			subject,
-			semester,
-			chapter_no,
-			chapter_title,
-			question,
-			option_a,
-			option_b,
-			option_c,
-			option_d,
-			correct_index,
-			time_limit_ms
-		FROM soal
-		WHERE `+where+`
-		ORDER BY chapter_no, id`,
-		args...,
-	)
-
+	rows, err := db.Query(query, args...)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 
-	var out []Question
-
+	var result []Soal
 	for rows.Next() {
-		var q Question
-		var a, b, c, dd string
-
-		if err := rows.Scan(
-			&q.ID,
-			&q.Grade,
-			&q.Subject,
-			&q.Semester,
-			&q.ChapterNo,
-			&q.ChapterTitle,
-			&q.Question,
-			&a,
-			&b,
-			&c,
-			&dd,
-			&q.CorrectIndex,
-			&q.TimeLimitMs,
-		); err != nil {
+		var s Soal
+		var optsJSON []byte
+		err := rows.Scan(&s.ID, &s.Grade, &s.Subject, &s.Semester, &s.ChapterNum, &s.ChapterTitle, &s.Question, &optsJSON, &s.CorrectAnswerIdx, &s.TimeLimit)
+		if err != nil {
 			return nil, err
 		}
-
-		q.Options = []string{a, b, c, dd}
-		out = append(out, q)
+		json.Unmarshal(optsJSON, &s.Options)
+		result = append(result, s)
 	}
 
-	return out, rows.Err()
-}
-
-func (d *DB) GetSetting(ctx context.Context, k string) (string, error) {
-	var v string
-
-	err := d.SQL.QueryRowContext(
-		ctx,
-		"SELECT value FROM settings WHERE key=$1",
-		k,
-	).Scan(&v)
-
-	return v, err
-}
-
-func (d *DB) SetSetting(ctx context.Context, k, v string) error {
-	_, err := d.SQL.ExecContext(
-		ctx,
-		`INSERT INTO settings(key,value,updated_at)
-		 VALUES($1,$2,now())
-		 ON CONFLICT(key)
-		 DO UPDATE SET
-			value=excluded.value,
-			updated_at=now()`,
-		k,
-		v,
-	)
-
-	return err
-}
-
-type Meta struct {
-	Grades   []string `json:"grades"`
-	Subjects []string `json:"subjects"`
-}
-
-func (d *DB) GetMeta(ctx context.Context) (Meta, error) {
-	var m Meta
-
-	rows, err := d.SQL.QueryContext(
-		ctx,
-		"SELECT DISTINCT grade FROM soal ORDER BY grade",
-	)
-	if err != nil {
-		return m, err
-	}
-
-	for rows.Next() {
-		var x string
-
-		if err := rows.Scan(&x); err != nil {
-			rows.Close()
-			return m, err
-		}
-
-		m.Grades = append(m.Grades, x)
-	}
-
-	rows.Close()
-
-	rows, err = d.SQL.QueryContext(
-		ctx,
-		"SELECT DISTINCT subject FROM soal ORDER BY subject",
-	)
-	if err != nil {
-		return m, err
-	}
-
-	for rows.Next() {
-		var x string
-
-		if err := rows.Scan(&x); err != nil {
-			rows.Close()
-			return m, err
-		}
-
-		m.Subjects = append(m.Subjects, x)
-	}
-
-	rows.Close()
-
-	return m, nil
+	return result, nil
 }

@@ -2,64 +2,156 @@ package main
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/hex"
 	"encoding/json"
+	"io"
 	"log"
 	"net/http"
 	"os"
-	"strings"
-	"time"
+	"strconv"
+
+	"github.com/gorilla/websocket"
 )
 
-type App struct {
-	DB        *DB
-	AI        *AIService
-	Hub       *Hub
-	SiteAuth  *TokenAuth
-	AdminAuth *TokenAuth
+var upgrader = websocket.Upgrader{
+	CheckOrigin: func(r *http.Request) bool { return true },
 }
 
-func env(k, f string) string {
-	v := strings.TrimSpace(os.Getenv(k))
-	if v == "" {
-		return f
-	}
-	return v
-}
 func main() {
-	ctx := context.Background()
-	db, e := NewDB(ctx, env("DATABASE_URL", ""))
-	if e != nil {
-		log.Fatal(e)
+	initDB()
+	initPasscodeCache()
+
+	hub := newHub()
+	go hub.run()
+
+	// Static Files Frontend
+	fs := http.FileServer(http.Dir("./static"))
+	http.Handle("/static/", http.StripPrefix("/static/", fs))
+
+	// Routes HTML
+	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		http.ServeFile(w, r, "./static/index.html")
+	})
+	http.HandleFunc("/host", func(w http.ResponseWriter, r *http.Request) {
+		http.ServeFile(w, r, "./static/host.html")
+	})
+	http.HandleFunc("/admin", adminAuthMiddleware(func(w http.ResponseWriter, r *http.Request) {
+		http.ServeFile(w, r, "./static/admin.html")
+	}))
+
+	// API Verify Passcode
+	http.HandleFunc("/api/verify-passcode", func(w http.ResponseWriter, r *http.Request) {
+		key := r.URL.Query().Get("key")
+		if validateSitePasscode(key) {
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte(`{"valid":true}`))
+		} else {
+			w.WriteHeader(http.StatusUnauthorized)
+			w.Write([]byte(`{"valid":false}`))
+		}
+	})
+
+	// API Admin: Update Site Passcode
+	http.HandleFunc("/api/admin/update-passcode", adminAuthMiddleware(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		var req struct {
+			Passcode string `json:"passcode"`
+		}
+		json.NewDecoder(r.Body).Decode(&req)
+
+		if req.Passcode == "" {
+			http.Error(w, "Passcode tidak boleh kosong", http.StatusBadRequest)
+			return
+		}
+
+		err := updateSitePasscodeInDB(req.Passcode)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		setPasscode(req.Passcode)
+		w.Write([]byte(`{"status":"success"}`))
+	}))
+
+	// API Admin: Upload & Auto Generate Gemini Quiz
+	http.HandleFunc("/api/admin/upload-scan", adminAuthMiddleware(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+
+		r.ParseMultipartForm(10 << 20) // Limit 10MB
+		file, header, err := r.FormFile("file")
+		if err != nil {
+			http.Error(w, "File upload error", http.StatusBadRequest)
+			return
+		}
+		defer file.Close()
+
+		fileBytes, err := io.ReadAll(file)
+		if err != nil {
+			http.Error(w, "Gagal membaca file", http.StatusInternalServerError)
+			return
+		}
+
+		sem, _ := strconv.Atoi(r.FormValue("semester"))
+		chap, _ := strconv.Atoi(r.FormValue("chapter_num"))
+
+		meta := Soal{
+			Grade:        r.FormValue("grade"),
+			Subject:      r.FormValue("subject"),
+			Semester:     sem,
+			ChapterNum:   chap,
+			ChapterTitle: r.FormValue("chapter_title"),
+		}
+
+		mimeType := header.Header.Get("Content-Type")
+		if mimeType == "" {
+			mimeType = "image/jpeg"
+		}
+
+		soalList, err := processScanWithGemini(context.Background(), fileBytes, mimeType, meta)
+		if err != nil {
+			http.Error(w, "Gemini AI Error: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		err = saveSoalBatch(soalList)
+		if err != nil {
+			http.Error(w, "Gagal simpan ke DB: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"status": "success",
+			"count":  len(soalList),
+			"data":   soalList,
+		})
+	}))
+
+	// WebSocket Endpoint
+	http.HandleFunc("/ws", func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			log.Println("Upgrade error:", err)
+			return
+		}
+		client := &Client{hub: hub, conn: conn, send: make(chan []byte, 256)}
+		hub.register <- client
+
+		go client.writePump()
+		go client.readPump()
+	})
+
+	port := os.Getenv("PORT")
+	if port == "" {
+		port = "8080"
 	}
-	defer db.Close()
-	sec := os.Getenv("AUTH_SECRET")
-	if sec == "" {
-		b := make([]byte, 32)
-		rand.Read(b)
-		sec = hex.EncodeToString(b)
-		log.Println("WARNING AUTH_SECRET not set; ephemeral secret")
-	}
-	a := &App{DB: db, AI: NewAIService(os.Getenv("GEMINI_API_KEY")), Hub: NewHub(), SiteAuth: NewTokenAuth([]byte(sec), 24*time.Hour), AdminAuth: NewTokenAuth([]byte(sec), 8*time.Hour)}
-	a.Hub.StartJanitor()
-	m := http.NewServeMux()
-	m.HandleFunc("/healthz", a.health)
-	m.HandleFunc("/api/site/verify", a.siteVerify)
-	m.HandleFunc("/api/admin/login", a.adminLogin)
-	m.HandleFunc("/api/admin/settings", a.adminSettings)
-	m.HandleFunc("/api/admin/generate", a.generateQuestions)
-	m.HandleFunc("/api/meta", a.meta)
-	m.HandleFunc("/api/host/rooms", a.createRoom)
-	m.HandleFunc("/api/host/rooms/", a.roomAPI)
-	m.HandleFunc("/api/room/qr", a.qrHandler)
-	m.HandleFunc("/ws", a.websocket)
-	m.Handle("/", http.FileServer(http.Dir("./web")))
-	p := env("PORT", "8080")
-	log.Printf("listening on :%s", p)
-	log.Fatal(http.ListenAndServe(":"+p, m))
-}
-func (a *App) health(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]any{"ok": true, "time": time.Now().UTC()})
+
+	log.Printf("Server berjalan di port :%s", port)
+	log.Fatal(http.ListenAndServe(":"+port, nil))
 }

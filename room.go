@@ -1,198 +1,106 @@
 package main
 
 import (
-	"crypto/rand"
 	"encoding/json"
-	"fmt"
-	"math/big"
-	"net/http"
+	"math/rand"
 	"sort"
-	"strings"
 	"sync"
 	"time"
 )
 
 type Player struct {
-	ID      string  `json:"id"`
-	Name    string  `json:"name"`
-	Score   int     `json:"score"`
-	Correct int     `json:"correct"`
-	TotalMs int64   `json:"total_ms"`
-	Client  *Client `json:"-"`
-}
-type Room struct {
-	Code, Grade, Subject, Scope           string
-	Semester, Chapter                     *int
-	Questions                             []Question
-	Players                               map[string]*Player
-	Current                               int
-	State                                 string
-	CreatedAt, StartedAt, QuestionStarted time.Time
-	mu                                    sync.Mutex
+	Name  string `json:"name"`
+	Score int    `json:"score"`
 }
 
-func randomPIN(h *Hub) (string, error) {
-	for i := 0; i < 100; i++ {
-		n, e := rand.Int(rand.Reader, big.NewInt(1000000))
-		if e != nil {
-			return "", e
-		}
-		x := fmt.Sprintf("%06d", n.Int64())
-		if h.Get(x) == nil {
-			return x, nil
-		}
-	}
-	return "", fmt.Errorf("unable to create PIN")
+type Room struct {
+	Code            string             `json:"code"`
+	Host            *Client            `json:"-"`
+	Players         map[string]*Client `json:"-"`
+	PlayerStats     map[string]*Player `json:"players"`
+	SoalList        []Soal             `json:"-"`
+	CurrentIndex    int                `json:"current_index"`
+	State           string             `json:"state"` // "LOBBY", "QUESTION", "LEADERBOARD", "FINISHED"
+	QuestionStartMs int64              `json:"-"`
+	AnswersReceived map[string]bool    `json:"-"`
+	mu              sync.RWMutex
 }
-func (a *App) createRoom(w http.ResponseWriter, r *http.Request) {
-	if !a.requireSite(r) {
-		jsonError(w, 401, "site authentication required")
-		return
+
+func generatePIN() string {
+	rand.Seed(time.Now().UnixNano())
+	const digits = "0123456789"
+	b := make([]byte, 6)
+	for i := range b {
+		b[i] = digits[rand.Intn(len(digits))]
 	}
-	if r.Method != http.MethodPost {
-		jsonError(w, 405, "method not allowed")
-		return
-	}
-	var x struct {
-		Grade, Subject, Scope string
-		Semester, Chapter     *int
-	}
-	if json.NewDecoder(r.Body).Decode(&x) != nil {
-		jsonError(w, 400, "invalid json")
-		return
-	}
-	var sem, chap *int
-	switch x.Scope {
-	case "chapter":
-		if x.Semester == nil || x.Chapter == nil {
-			jsonError(w, 400, "semester/chapter required")
-			return
-		}
-		sem = x.Semester
-		chap = x.Chapter
-	case "semester1":
-		v := 1
-		sem = &v
-	case "semester2":
-		v := 2
-		sem = &v
-	case "full_year":
-	default:
-		jsonError(w, 400, "invalid scope")
-		return
-	}
-	qs, e := a.DB.GetQuestions(r.Context(), x.Grade, x.Subject, sem, chap)
-	if e != nil {
-		jsonError(w, 500, e.Error())
-		return
-	}
-	if len(qs) == 0 {
-		jsonError(w, 400, "no questions match filter")
-		return
-	}
-	code, e := randomPIN(a.Hub)
-	if e != nil {
-		jsonError(w, 500, e.Error())
-		return
-	}
-	room := &Room{Code: code, Grade: x.Grade, Subject: x.Subject, Scope: x.Scope, Semester: sem, Chapter: chap, Questions: qs, Players: map[string]*Player{}, State: "lobby", CreatedAt: time.Now()}
-	a.Hub.Add(room)
-	writeJSON(w, map[string]any{"room": publicRoom(room)})
+	return string(b)
 }
-func (a *App) roomAPI(w http.ResponseWriter, r *http.Request) {
-	if !a.requireSite(r) {
-		jsonError(w, 401, "site authentication required")
-		return
+
+func NewRoom(host *Client, soal []Soal) *Room {
+	return &Room{
+		Code:            generatePIN(),
+		Host:            host,
+		Players:         make(map[string]*Client),
+		PlayerStats:     make(map[string]*Player),
+		SoalList:        soal,
+		CurrentIndex:    0,
+		State:           "LOBBY",
+		AnswersReceived: make(map[string]bool),
 	}
-	parts := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
-	if len(parts) < 3 {
-		jsonError(w, 404, "not found")
-		return
-	}
-	room := a.Hub.Get(parts[2])
-	if room == nil {
-		jsonError(w, 404, "room not found")
-		return
-	}
-	writeJSON(w, map[string]any{"room": publicRoom(room)})
 }
-func publicRoom(r *Room) map[string]any {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	ps := []map[string]any{}
+
+func (r *Room) Broadcast(msg interface{}) {
+	data, err := json.Marshal(msg)
+	if err != nil {
+		return
+	}
+
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	if r.Host != nil {
+		r.Host.send <- data
+	}
 	for _, p := range r.Players {
-		ps = append(ps, map[string]any{"id": p.ID, "name": p.Name, "score": p.Score, "correct": p.Correct})
-	}
-	return map[string]any{"code": r.Code, "grade": r.Grade, "subject": r.Subject, "scope": r.Scope, "state": r.State, "current": r.Current, "total": len(r.Questions), "players": ps}
-}
-func (a *App) startRoom(r *Room) {
-	r.mu.Lock()
-	if r.State != "lobby" {
-		r.mu.Unlock()
-		return
-	}
-	r.State = "question"
-	r.Current = 0
-	r.QuestionStarted = time.Now()
-	q := r.Questions[0]
-	r.mu.Unlock()
-	r.broadcast(map[string]any{"type": "question", "index": 0, "question": q, "server_time": time.Now().UnixMilli()})
-}
-func (a *App) nextQuestion(r *Room) {
-	r.mu.Lock()
-	r.Current++
-	if r.Current >= len(r.Questions) {
-		r.State = "finished"
-		r.mu.Unlock()
-		r.broadcast(map[string]any{"type": "finished", "leaderboard": leaderboard(r)})
-		return
-	}
-	r.QuestionStarted = time.Now()
-	q := r.Questions[r.Current]
-	idx := r.Current
-	r.mu.Unlock()
-	r.broadcast(map[string]any{"type": "question", "index": idx, "question": q, "server_time": time.Now().UnixMilli()})
-}
-func (r *Room) broadcast(v any) {
-	for _, p := range r.Players {
-		if p.Client != nil {
-			p.Client.Send(v)
-		}
+		p.send <- data
 	}
 }
-func (a *App) answer(r *Room, p *Player, idx int, elapsed int64) {
-	r.mu.Lock()
-	if r.State != "question" || r.Current >= len(r.Questions) {
-		r.mu.Unlock()
-		return
+
+func (r *Room) CalculateScore(elapsedMs int64, timeLimitSec int) int {
+	maxMs := int64(timeLimitSec * 1000)
+	if elapsedMs > maxMs {
+		elapsedMs = maxMs
 	}
-	q := r.Questions[r.Current]
-	ok := idx == q.CorrectIndex
-	if ok {
-		p.Correct++
-		p.Score++
+
+	// Base score 500, Speed bonus up to 500
+	speedFactor := float64(maxMs-elapsedMs) / float64(maxMs)
+	if speedFactor < 0 {
+		speedFactor = 0
 	}
-	p.TotalMs += elapsed
-	r.mu.Unlock()
-	p.Client.Send(map[string]any{"type": "answer_result", "correct": ok, "correct_index": q.CorrectIndex, "score": p.Score})
+
+	return 500 + int(500.0*speedFactor)
 }
-func leaderboard(r *Room) []*Player {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	o := make([]*Player, 0, len(r.Players))
-	for _, p := range r.Players {
-		c := *p
-		c.Client = nil
-		o = append(o, &c)
+
+type LeaderboardEntry struct {
+	Name  string `json:"name"`
+	Score int    `json:"score"`
+}
+
+func (r *Room) GetLeaderboard() []LeaderboardEntry {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	var list []LeaderboardEntry
+	for _, p := range r.PlayerStats {
+		list = append(list, LeaderboardEntry{Name: p.Name, Score: p.Score})
 	}
-	sort.Slice(o, func(i, j int) bool {
-		if o[i].Correct != o[j].Correct {
-			return o[i].Correct > o[j].Correct
-		}
-		return o[i].TotalMs < o[j].TotalMs
+
+	sort.Slice(list, func(i, j int) bool {
+		return list[i].Score > list[j].Score
 	})
-	if len(o) > 3 {
-		o = o[:3]
+
+	if len(list) > 5 {
+		return list[:5]
 	}
-	return o
+	return list
 }
