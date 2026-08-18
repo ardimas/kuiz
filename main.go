@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"embed"
 	"encoding/json"
 	"io"
 	"log"
@@ -11,6 +12,9 @@ import (
 
 	"github.com/gorilla/websocket"
 )
+
+//go:embed static/*
+var staticFS embed.FS
 
 var upgrader = websocket.Upgrader{
 	CheckOrigin: func(r *http.Request) bool { return true },
@@ -23,19 +27,41 @@ func main() {
 	hub := newHub()
 	go hub.run()
 
-	// Static Files Frontend
-	fs := http.FileServer(http.Dir("./static"))
-	http.Handle("/static/", http.StripPrefix("/static/", fs))
-
-	// Routes HTML
+	// Handler Halaman Utama (Pemain)
 	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		http.ServeFile(w, r, "./static/index.html")
+		if r.URL.Path != "/" {
+			http.NotFound(w, r)
+			return
+		}
+		data, err := staticFS.ReadFile("static/index.html")
+		if err != nil {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.Write(data)
 	})
+
+	// Handler Halaman Host (TV)
 	http.HandleFunc("/host", func(w http.ResponseWriter, r *http.Request) {
-		http.ServeFile(w, r, "./static/host.html")
+		data, err := staticFS.ReadFile("static/host.html")
+		if err != nil {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.Write(data)
 	})
+
+	// Handler Halaman Admin
 	http.HandleFunc("/admin", adminAuthMiddleware(func(w http.ResponseWriter, r *http.Request) {
-		http.ServeFile(w, r, "./static/admin.html")
+		data, err := staticFS.ReadFile("static/admin.html")
+		if err != nil {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.Write(data)
 	}))
 
 	// API Verify Passcode
