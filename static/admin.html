@@ -3,20 +3,27 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Admin - Scan Buku & Settings</title>
+    <title>Admin - Scan Buku & Management Soal</title>
     <style>
         body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background: #f4f7f6; margin: 0; padding: 20px; }
-        .container { max-width: 700px; background: white; padding: 25px; border-radius: 12px; box-shadow: 0 4px 10px rgba(0,0,0,0.1); margin: auto; }
+        .container { max-width: 900px; background: white; padding: 25px; border-radius: 12px; box-shadow: 0 4px 10px rgba(0,0,0,0.1); margin: auto; }
         h2 { color: #333; margin-top: 0; }
         .form-group { margin-bottom: 15px; }
         label { display: block; margin-bottom: 5px; font-weight: bold; }
-        input, select, button { width: 100%; padding: 10px; border-radius: 6px; border: 1px solid #ccc; box-sizing: border-box; }
+        input, select, button, textarea { width: 100%; padding: 10px; border-radius: 6px; border: 1px solid #ccc; box-sizing: border-box; }
         button { background: #4CAF50; color: white; font-weight: bold; cursor: pointer; border: none; margin-top: 10px; }
         button:hover { background: #45a049; }
+        .btn-danger { background: #e74c3c; margin-top: 0; width: auto; padding: 6px 12px; }
+        .btn-edit { background: #f39c12; margin-top: 0; width: auto; padding: 6px 12px; }
         .status { margin-top: 15px; padding: 10px; border-radius: 6px; display: none; }
         .success { background: #d4edda; color: #155724; }
         .error { background: #f8d7da; color: #721c24; }
         hr { margin: 30px 0; border: 0; border-top: 1px solid #ddd; }
+        table { width: 100%; border-collapse: collapse; margin-top: 15px; font-size: 14px; }
+        th, td { border: 1px solid #ddd; padding: 10px; text-align: left; }
+        th { background: #f2f2f2; }
+        .modal { display: none; position: fixed; z-index: 10; left: 0; top: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); }
+        .modal-content { background: white; margin: 5% auto; padding: 20px; border-radius: 8px; max-width: 600px; }
     </style>
 </head>
 <body>
@@ -25,30 +32,11 @@
         <form id="uploadForm">
             <div class="form-group">
                 <label>Kelas / Grade:</label>
-                <input type="text" id="grade" list="gradeList" placeholder="Ketik atau pilih (misal: Kelas 5)" required>
-                <datalist id="gradeList">
-                    <option value="Kelas 1">
-                    <option value="Kelas 2">
-                    <option value="Kelas 3">
-                    <option value="Kelas 4">
-                    <option value="Kelas 5">
-                    <option value="Kelas 6">
-                </datalist>
+                <input type="text" id="grade" placeholder="Contoh: Kelas 5" required>
             </div>
             <div class="form-group">
                 <label>Mata Pelajaran:</label>
-                <input type="text" id="subject" list="subjectList" placeholder="Ketik bebas atau pilih (misal: PAI, PJOK, IPA)" required>
-                <datalist id="subjectList">
-                    <option value="IPA">
-                    <option value="Matematika">
-                    <option value="Bahasa Indonesia">
-                    <option value="IPS">
-                    <option value="Bahasa Inggris">
-                    <option value="PAI">
-                    <option value="Pancasila / PPKn">
-                    <option value="PJOK">
-                    <option value="Seni Budaya">
-                </datalist>
+                <input type="text" id="subject" placeholder="Contoh: PAI, PJOK, IPA, atau Coding" required>
             </div>
             <div class="form-group">
                 <label>Semester:</label>
@@ -75,6 +63,28 @@
 
         <hr>
 
+        <h2>📋 Daftar Bank Soal & Mata Pelajaran</h2>
+        <button onclick="loadSoal()" style="background:#3498db; width:auto;">🔄 Refresh Data</button>
+        <button onclick="openAddModal()" style="background:#9b59b6; width:auto; float:right;">➕ Tambah Soal Manual</button>
+        
+        <table id="soalTable">
+            <thead>
+                <tr>
+                    <th>Kelas</th>
+                    <th>Matpel</th>
+                    <th>Sem/Bab</th>
+                    <th>Pertanyaan</th>
+                    <th>Kunci</th>
+                    <th>Aksi</th>
+                </tr>
+            </thead>
+            <tbody>
+                <tr><td colspan="6" style="text-align:center;">Memuat data...</td></tr>
+            </tbody>
+        </table>
+
+        <hr>
+
         <h2>🔒 Pengaturan Kode Akses Situs (Site Passcode)</h2>
         <div class="form-group">
             <label>Kode Akses Situs Baru:</label>
@@ -84,7 +94,155 @@
         <div id="passcodeStatus" class="status"></div>
     </div>
 
+    <div id="soalModal" class="modal">
+        <div class="modal-content">
+            <h3 id="modalTitle">Edit Soal</h3>
+            <input type="hidden" id="modalId">
+            <div class="form-group"><label>Kelas:</label><input type="text" id="mGrade"></div>
+            <div class="form-group"><label>Mata Pelajaran:</label><input type="text" id="mSubject"></div>
+            <div class="form-group"><label>Semester:</label><input type="number" id="mSemester" value="1"></div>
+            <div class="form-group"><label>Nomor Bab:</label><input type="number" id="mChapterNum" value="1"></div>
+            <div class="form-group"><label>Judul Bab:</label><input type="text" id="mChapterTitle"></div>
+            <div class="form-group"><label>Pertanyaan:</label><textarea id="mQuestion" rows="3"></textarea></div>
+            <div class="form-group"><label>Opsi A:</label><input type="text" id="mOpt0"></div>
+            <div class="form-group"><label>Opsi B:</label><input type="text" id="mOpt1"></div>
+            <div class="form-group"><label>Opsi C:</label><input type="text" id="mOpt2"></div>
+            <div class="form-group"><label>Opsi D:</label><input type="text" id="mOpt3"></div>
+            <div class="form-group">
+                <label>Kunci Jawaban Benar:</label>
+                <select id="mCorrectIdx">
+                    <option value="0">Opsi A</option>
+                    <option value="1">Opsi B</option>
+                    <option value="2">Opsi C</option>
+                    <option value="3">Opsi D</option>
+                </select>
+            </div>
+            <button onclick="saveSoalModal()" style="background:#2ecc71;">💾 Simpan Soal</button>
+            <button onclick="closeModal()" style="background:#95a5a6;">Batal</button>
+        </div>
+    </div>
+
     <script>
+        let allSoalData = [];
+
+        async function loadSoal() {
+            try {
+                const res = await fetch('/api/admin/soal');
+                allSoalData = await res.json();
+                const tbody = document.querySelector('#soalTable tbody');
+                tbody.innerHTML = '';
+
+                if (!allSoalData || allSoalData.length === 0) {
+                    tbody.innerHTML = '<tr><td colspan="6" style="text-align:center;">Belum ada soal di database.</td></tr>';
+                    return;
+                }
+
+                allSoalData.forEach(s => {
+                    const keys = ['A', 'B', 'C', 'D'];
+                    tbody.innerHTML += `
+                        <tr>
+                            <td>${s.grade}</td>
+                            <td><b>${s.subject}</b></td>
+                            <td>Sem ${s.semester} - Bab ${s.chapter_num}</td>
+                            <td>${s.question}</td>
+                            <td><b>${keys[s.correct_answer_idx]}</b></td>
+                            <td>
+                                <button class="btn-edit" onclick="openEditModal(${s.id})">✏️ Edit</button>
+                                <button class="btn-danger" onclick="deleteSoal(${s.id})">🗑️ Hapus</button>
+                            </td>
+                        </tr>
+                    `;
+                });
+            } catch (err) {
+                alert('Gagal memuat bank soal');
+            }
+        }
+
+        async function deleteSoal(id) {
+            if(!confirm('Yakin ingin menghapus soal ini?')) return;
+            const res = await fetch(`/api/admin/soal?id=${id}`, { method: 'DELETE' });
+            if(res.ok) {
+                loadSoal();
+            } else {
+                alert('Gagal menghapus soal');
+            }
+        }
+
+        function openEditModal(id) {
+            const s = allSoalData.find(x => x.id === id);
+            if(!s) return;
+            document.getElementById('modalTitle').innerText = 'Edit Soal';
+            document.getElementById('modalId').value = s.id;
+            document.getElementById('mGrade').value = s.grade;
+            document.getElementById('mSubject').value = s.subject;
+            document.getElementById('mSemester').value = s.semester;
+            document.getElementById('mChapterNum').value = s.chapter_num;
+            document.getElementById('mChapterTitle').value = s.chapter_title;
+            document.getElementById('mQuestion').value = s.question;
+            document.getElementById('mOpt0').value = s.options[0] || '';
+            document.getElementById('mOpt1').value = s.options[1] || '';
+            document.getElementById('mOpt2').value = s.options[2] || '';
+            document.getElementById('mOpt3').value = s.options[3] || '';
+            document.getElementById('mCorrectIdx').value = s.correct_answer_idx;
+            document.getElementById('soalModal').style.display = 'block';
+        }
+
+        function openAddModal() {
+            document.getElementById('modalTitle').innerText = 'Tambah Soal Manual';
+            document.getElementById('modalId').value = '';
+            document.getElementById('mGrade').value = 'Kelas 5';
+            document.getElementById('mSubject').value = 'IPA';
+            document.getElementById('mSemester').value = 1;
+            document.getElementById('mChapterNum').value = 1;
+            document.getElementById('mChapterTitle').value = '';
+            document.getElementById('mQuestion').value = '';
+            document.getElementById('mOpt0').value = '';
+            document.getElementById('mOpt1').value = '';
+            document.getElementById('mOpt2').value = '';
+            document.getElementById('mOpt3').value = '';
+            document.getElementById('mCorrectIdx').value = 0;
+            document.getElementById('soalModal').style.display = 'block';
+        }
+
+        function closeModal() {
+            document.getElementById('soalModal').style.display = 'none';
+        }
+
+        async function saveSoalModal() {
+            const id = document.getElementById('modalId').value;
+            const payload = {
+                id: id ? parseInt(id) : 0,
+                grade: document.getElementById('mGrade').value,
+                subject: document.getElementById('mSubject').value,
+                semester: parseInt(document.getElementById('mSemester').value),
+                chapter_num: parseInt(document.getElementById('mChapterNum').value),
+                chapter_title: document.getElementById('mChapterTitle').value,
+                question: document.getElementById('mQuestion').value,
+                options: [
+                    document.getElementById('mOpt0').value,
+                    document.getElementById('mOpt1').value,
+                    document.getElementById('mOpt2').value,
+                    document.getElementById('mOpt3').value
+                ],
+                correct_answer_idx: parseInt(document.getElementById('mCorrectIdx').value),
+                time_limit: 15
+            };
+
+            const method = id ? 'PUT' : 'POST';
+            const res = await fetch('/api/admin/soal', {
+                method: method,
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify(payload)
+            });
+
+            if(res.ok) {
+                closeModal();
+                loadSoal();
+            } else {
+                alert('Gagal menyimpan soal');
+            }
+        }
+
         document.getElementById('uploadForm').addEventListener('submit', async (e) => {
             e.preventDefault();
             const statusDiv = document.getElementById('uploadStatus');
@@ -110,6 +268,7 @@
                     statusDiv.className = 'status success';
                     statusDiv.innerText = `✅ Berhasil! ${data.count} soal berhasil di-generate dan disimpan ke Supabase.`;
                     document.getElementById('uploadForm').reset();
+                    loadSoal();
                 } else {
                     throw new Error(data.message || 'Gagal memproses file');
                 }
@@ -145,6 +304,9 @@
                 statusDiv.innerText = '❌ Error memperbarui passcode';
             }
         }
+
+        // Auto load saat pertama kali halaman terbuka
+        loadSoal();
     </script>
 </body>
 </html>

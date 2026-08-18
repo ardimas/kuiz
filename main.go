@@ -27,7 +27,6 @@ func main() {
 	hub := newHub()
 	go hub.run()
 
-	// Handler Halaman Utama (Pemain)
 	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/" {
 			http.NotFound(w, r)
@@ -42,7 +41,6 @@ func main() {
 		w.Write(data)
 	})
 
-	// Handler Halaman Host (TV)
 	http.HandleFunc("/host", func(w http.ResponseWriter, r *http.Request) {
 		data, err := staticFS.ReadFile("static/host.html")
 		if err != nil {
@@ -53,7 +51,6 @@ func main() {
 		w.Write(data)
 	})
 
-	// Handler Halaman Admin
 	http.HandleFunc("/admin", adminAuthMiddleware(func(w http.ResponseWriter, r *http.Request) {
 		data, err := staticFS.ReadFile("static/admin.html")
 		if err != nil {
@@ -64,7 +61,6 @@ func main() {
 		w.Write(data)
 	}))
 
-	// API Verify Passcode
 	http.HandleFunc("/api/verify-passcode", func(w http.ResponseWriter, r *http.Request) {
 		key := r.URL.Query().Get("key")
 		if validateSitePasscode(key) {
@@ -76,7 +72,6 @@ func main() {
 		}
 	})
 
-	// API Admin: Update Site Passcode
 	http.HandleFunc("/api/admin/update-passcode", adminAuthMiddleware(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -102,14 +97,67 @@ func main() {
 		w.Write([]byte(`{"status":"success"}`))
 	}))
 
-	// API Admin: Upload & Auto Generate Gemini Quiz
+	// API Admin CRUD Bank Soal
+	http.HandleFunc("/api/admin/soal", adminAuthMiddleware(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.Method {
+		case http.MethodGet:
+			list, err := getAllSoalDB()
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			json.NewEncoder(w).Encode(list)
+
+		case http.MethodPost:
+			var s Soal
+			if err := json.NewDecoder(r.Body).Decode(&s); err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			if err := insertSingleSoalDB(s); err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			json.NewEncoder(w).Encode(map[string]string{"status": "success"})
+
+		case http.MethodPut:
+			var s Soal
+			if err := json.NewDecoder(r.Body).Decode(&s); err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			if err := updateSoalDB(s); err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			json.NewEncoder(w).Encode(map[string]string{"status": "success"})
+
+		case http.MethodDelete:
+			idStr := r.URL.Query().Get("id")
+			id, _ := strconv.ParseInt(idStr, 10, 64)
+			if id == 0 {
+				http.Error(w, "ID tidak valid", http.StatusBadRequest)
+				return
+			}
+			if err := deleteSoalDB(id); err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			json.NewEncoder(w).Encode(map[string]string{"status": "success"})
+
+		default:
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		}
+	}))
+
 	http.HandleFunc("/api/admin/upload-scan", adminAuthMiddleware(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 			return
 		}
 
-		r.ParseMultipartForm(10 << 20) // Limit 10MB
+		r.ParseMultipartForm(10 << 20)
 		file, header, err := r.FormFile("file")
 		if err != nil {
 			http.Error(w, "File upload error", http.StatusBadRequest)
@@ -159,7 +207,6 @@ func main() {
 		})
 	}))
 
-	// WebSocket Endpoint
 	http.HandleFunc("/ws", func(w http.ResponseWriter, r *http.Request) {
 		conn, err := upgrader.Upgrade(w, r, nil)
 		if err != nil {
