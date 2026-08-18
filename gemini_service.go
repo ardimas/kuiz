@@ -50,7 +50,7 @@ Ketentuan:
 - correct_answer_idx adalah angka 0 untuk A, 1 untuk B, 2 untuk C, 3 untuk D.
 - Bahasa Indonesia yang ramah anak.`, meta.Grade, meta.Subject, meta.Semester, meta.ChapterNum, meta.ChapterTitle)
 
-	dataPart := genai.Data(mimeType, fileBytes)
+	dataPart := genai.Blob{MIMEType: mimeType, Data: fileBytes}
 	resp, err := model.GenerateContent(ctx, dataPart, genai.Text(prompt))
 	if err != nil {
 		return nil, err
