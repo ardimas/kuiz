@@ -1,0 +1,144 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Admin - Scan Buku & Settings</title>
+    <style>
+        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background: #f4f7f6; margin: 0; padding: 20px; }
+        .container { max-width: 700px; background: white; padding: 25px; border-radius: 12px; box-shadow: 0 4px 10px rgba(0,0,0,0.1); margin: auto; }
+        h2 { color: #333; margin-top: 0; }
+        .form-group { margin-bottom: 15px; }
+        label { display: block; margin-bottom: 5px; font-weight: bold; }
+        input, select, button { width: 100%; padding: 10px; border-radius: 6px; border: 1px solid #ccc; box-sizing: border-box; }
+        button { background: #4CAF50; color: white; font-weight: bold; cursor: pointer; border: none; margin-top: 10px; }
+        button:hover { background: #45a049; }
+        .status { margin-top: 15px; padding: 10px; border-radius: 6px; display: none; }
+        .success { background: #d4edda; color: #155724; }
+        .error { background: #f8d7da; color: #721c24; }
+        hr { margin: 30px 0; border: 0; border-top: 1px solid #ddd; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h2>📚 Admin: Upload Scan Buku (Gemini Auto-Quiz)</h2>
+        <form id="uploadForm">
+            <div class="form-group">
+                <label>Kelas / Grade:</label>
+                <select id="grade" required>
+                    <option value="Kelas 1">Kelas 1</option>
+                    <option value="Kelas 2">Kelas 2</option>
+                    <option value="Kelas 3">Kelas 3</option>
+                    <option value="Kelas 4">Kelas 4</option>
+                    <option value="Kelas 5" selected>Kelas 5</option>
+                    <option value="Kelas 6">Kelas 6</option>
+                </select>
+            </div>
+            <div class="form-group">
+                <label>Mata Pelajaran:</label>
+                <select id="subject" required>
+                    <option value="IPA">IPA</option>
+                    <option value="Matematika">Matematika</option>
+                    <option value="Bahasa Indonesia">Bahasa Indonesia</option>
+                    <option value="IPS">IPS</option>
+                    <option value="Bahasa Inggris">Bahasa Inggris</option>
+                </select>
+            </div>
+            <div class="form-group">
+                <label>Semester:</label>
+                <select id="semester" required>
+                    <option value="1">Semester 1</option>
+                    <option value="2">Semester 2</option>
+                </select>
+            </div>
+            <div class="form-group">
+                <label>Nomor Bab:</label>
+                <input type="number" id="chapter_num" value="1" required>
+            </div>
+            <div class="form-group">
+                <label>Judul Bab:</label>
+                <input type="text" id="chapter_title" placeholder="Contoh: Organ Pencernaan Hewan" required>
+            </div>
+            <div class="form-group">
+                <label>Upload File Scan (Foto JPG/PNG atau PDF):</label>
+                <input type="file" id="file" accept="image/*,.pdf" required>
+            </div>
+            <button type="submit" id="btnUpload">🚀 Proses dengan Gemini AI</button>
+        </form>
+        <div id="uploadStatus" class="status"></div>
+
+        <hr>
+
+        <h2>🔒 Pengaturan Kode Akses Situs (Site Passcode)</h2>
+        <div class="form-group">
+            <label>Kode Akses Situs Baru:</label>
+            <input type="text" id="newPasscode" placeholder="Contoh: BELAJAR2026">
+        </div>
+        <button type="button" onclick="updatePasscode()" style="background:#2196F3;">💾 Simpan Kode Akses Baru</button>
+        <div id="passcodeStatus" class="status"></div>
+    </div>
+
+    <script>
+        document.getElementById('uploadForm').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const statusDiv = document.getElementById('uploadStatus');
+            const btn = document.getElementById('btnUpload');
+            
+            statusDiv.style.display = 'block';
+            statusDiv.className = 'status';
+            statusDiv.innerText = '⏳ Gemini AI sedang menganalisis materi buku & membuat soal... (Mohon tunggu 10-20 detik)';
+            btn.disabled = true;
+
+            const formData = new FormData();
+            formData.append('grade', document.getElementById('grade').value);
+            formData.append('subject', document.getElementById('subject').value);
+            formData.append('semester', document.getElementById('semester').value);
+            formData.append('chapter_num', document.getElementById('chapter_num').value);
+            formData.append('chapter_title', document.getElementById('chapter_title').value);
+            formData.append('file', document.getElementById('file').files[0]);
+
+            try {
+                const res = await fetch('/api/admin/upload-scan', { method: 'POST', body: formData });
+                const data = await res.json();
+                if (res.ok) {
+                    statusDiv.className = 'status success';
+                    statusDiv.innerText = `✅ Berhasil! ${data.count} soal berhasil di-generate dan disimpan ke Supabase.`;
+                    document.getElementById('uploadForm').reset();
+                } else {
+                    throw new Error(data.message || 'Gagal memproses file');
+                }
+            } catch (err) {
+                statusDiv.className = 'status error';
+                statusDiv.innerText = '❌ Error: ' + err.message;
+            } finally {
+                btn.disabled = false;
+            }
+        });
+
+        async function updatePasscode() {
+            const passcode = document.getElementById('newPasscode').value;
+            const statusDiv = document.getElementById('passcodeStatus');
+            if(!passcode) return alert('Isi passcode terlebih dahulu');
+
+            try {
+                const res = await fetch('/api/admin/update-passcode', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({passcode})
+                });
+                if(res.ok) {
+                    statusDiv.style.display = 'block';
+                    statusDiv.className = 'status success';
+                    statusDiv.innerText = '✅ Kode Akses Situs berhasil diperbarui!';
+                } else {
+                    throw new Error('Gagal update');
+                }
+            } catch(err) {
+                statusDiv.style.display = 'block';
+                statusDiv.className = 'status error';
+                statusDiv.innerText = '❌ Error memperbarui passcode';
+            }
+        }
+    </script>
+</body>
+</html>

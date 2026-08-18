@@ -1,0 +1,122 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Kuis Anak - Pemain</title>
+    <style>
+        body { font-family: 'Segoe UI', sans-serif; background: #222831; color: white; margin: 0; padding: 15px; text-align: center; }
+        .box { background: #393e46; max-width: 400px; margin: 20px auto; padding: 20px; border-radius: 12px; }
+        input, button { width: 100%; padding: 15px; margin: 10px 0; border-radius: 8px; border: none; font-size: 18px; box-sizing: border-box; }
+        button { font-weight: bold; cursor: pointer; }
+        .btn-join { background: #00adb5; color: white; }
+        .grid-answers { display: grid; grid-template-columns: 1fr 1fr; gap: 15px; height: 300px; margin-top: 20px; }
+        .btn-ans { font-size: 30px; font-weight: bold; color: white; border-radius: 12px; border: none; }
+        .ans-0 { background: #e74c3c; } .ans-1 { background: #3498db; }
+        .ans-2 { background: #f1c40f; } .ans-3 { background: #2ecc71; }
+        .feedback { font-size: 28px; font-weight: bold; margin-top: 50px; }
+    </style>
+</head>
+<body>
+    <div id="passcodeScreen" class="box">
+        <h2>🔒 Masukkan Kode Akses Situs</h2>
+        <input type="text" id="passcodeKey" placeholder="Kode Akses...">
+        <button class="btn-join" onclick="verifyPasscode()">Masuk</button>
+    </div>
+
+    <div id="loginScreen" class="box" style="display:none;">
+        <h2>🎮 Masuk Game Kuis</h2>
+        <input type="number" id="pin" placeholder="Kode PIN (6 Digit)">
+        <input type="text" id="playerName" placeholder="Nama Kamu">
+        <button class="btn-join" onclick="joinGame()">BERGABUNG</button>
+    </div>
+
+    <div id="waitScreen" class="box" style="display:none;">
+        <h2>Kamu Sudah Masuk! 🎉</h2>
+        <p>Lihat layar TV/Host. Menunggu game dimulai...</p>
+    </div>
+
+    <div id="playScreen" style="display:none;">
+        <h3>Pilih Jawaban Cepat!</h3>
+        <div class="grid-answers">
+            <button class="btn-ans ans-0" onclick="submitAnswer(0)">A</button>
+            <button class="btn-ans ans-1" onclick="submitAnswer(1)">B</button>
+            <button class="btn-ans ans-2" onclick="submitAnswer(2)">C</button>
+            <button class="btn-ans ans-3" onclick="submitAnswer(3)">D</button>
+        </div>
+    </div>
+
+    <div id="resultScreen" class="box" style="display:none;">
+        <div class="feedback" id="feedbackText"></div>
+    </div>
+
+    <script>
+        let ws;
+        const urlParams = new URLSearchParams(window.location.search);
+        let key = urlParams.get('key') || localStorage.getItem('site_key');
+
+        if(key) {
+            checkPasscode(key);
+        }
+
+        async function checkPasscode(k) {
+            const res = await fetch(`/api/verify-passcode?key=${k}`);
+            if(res.ok) {
+                localStorage.setItem('site_key', k);
+                document.getElementById('passcodeScreen').style.display = 'none';
+                document.getElementById('loginScreen').style.display = 'block';
+            }
+        }
+
+        function verifyPasscode() {
+            const inputKey = document.getElementById('passcodeKey').value;
+            checkPasscode(inputKey);
+        }
+
+        function joinGame() {
+            const pin = document.getElementById('pin').value;
+            const name = document.getElementById('playerName').value;
+            if(!pin || !name) return alert('Isi PIN dan Nama!');
+
+            const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+            ws = new WebSocket(`${protocol}//${window.location.host}/ws`);
+
+            ws.onopen = () => {
+                ws.send(JSON.stringify({ type: "JOIN_ROOM", payload: { pin, name } }));
+            };
+
+            ws.onmessage = (e) => {
+                const msg = JSON.parse(e.data);
+                if(msg.type === "JOIN_SUCCESS") {
+                    document.getElementById('loginScreen').style.display = 'none';
+                    document.getElementById('waitScreen').style.display = 'block';
+                } else if(msg.type === "NEW_QUESTION") {
+                    document.getElementById('waitScreen').style.display = 'none';
+                    document.getElementById('resultScreen').style.display = 'none';
+                    document.getElementById('playScreen').style.display = 'block';
+                } else if(msg.type === "ANSWER_RESULT") {
+                    document.getElementById('playScreen').style.display = 'none';
+                    document.getElementById('resultScreen').style.display = 'block';
+                    const fb = document.getElementById('feedbackText');
+                    if(msg.payload.correct) {
+                        fb.innerHTML = `✅ BENAR!<br>+${msg.payload.score_added} Poin`;
+                        fb.style.color = '#2ecc71';
+                    } else {
+                        fb.innerHTML = `❌ SALAH!`;
+                        fb.style.color = '#e74c3c';
+                    }
+                } else if(msg.type === "ERROR") {
+                    alert(msg.payload);
+                }
+            };
+        }
+
+        function submitAnswer(idx) {
+            ws.send(JSON.stringify({ type: "SUBMIT_ANSWER", payload: { option_index: idx } }));
+            document.getElementById('playScreen').style.display = 'none';
+            document.getElementById('waitScreen').style.display = 'block';
+            document.getElementById('waitScreen').querySelector('h2').innerText = 'Jawaban Terkirim!';
+        }
+    </script>
+</body>
+</html>

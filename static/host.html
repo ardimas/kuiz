@@ -1,0 +1,164 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Host Layar Utama - Game Kuis</title>
+    <style>
+        body { font-family: 'Arial', sans-serif; background: #1a1a2e; color: white; margin: 0; padding: 20px; text-align: center; }
+        .card { background: #16213e; max-width: 800px; margin: auto; padding: 30px; border-radius: 15px; box-shadow: 0 8px 20px rgba(0,0,0,0.5); }
+        .pin-box { font-size: 60px; font-weight: bold; color: #f2a365; letter-spacing: 5px; margin: 20px 0; }
+        .player-list { display: flex; flex-wrap: wrap; gap: 10px; justify-content: center; margin: 20px 0; }
+        .player-chip { background: #0f3460; padding: 10px 20px; border-radius: 20px; font-weight: bold; }
+        button { background: #e94560; color: white; border: none; padding: 15px 30px; font-size: 20px; font-weight: bold; border-radius: 8px; cursor: pointer; }
+        select, input { padding: 10px; border-radius: 6px; font-size: 16px; margin: 5px; }
+        .options-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 15px; margin-top: 20px; }
+        .option-box { padding: 20px; font-size: 20px; border-radius: 10px; font-weight: bold; }
+        .opt-0 { background: #e74c3c; } .opt-1 { background: #3498db; }
+        .opt-2 { background: #f1c40f; color: black; } .opt-3 { background: #2ecc71; }
+        .leaderboard-list { text-align: left; max-width: 400px; margin: auto; font-size: 22px; }
+    </style>
+</head>
+<body>
+    <div class="card" id="setupView">
+        <h1>🎮 Buat Room Kuis Baru</h1>
+        <div>
+            <select id="grade">
+                <option value="Kelas 5">Kelas 5</option>
+                <option value="Kelas 4">Kelas 4</option>
+                <option value="Kelas 3">Kelas 3</option>
+                <option value="Kelas 2">Kelas 2</option>
+                <option value="Kelas 1">Kelas 1</option>
+            </select>
+            <select id="subject">
+                <option value="IPA">IPA</option>
+                <option value="Matematika">Matematika</option>
+                <option value="Bahasa Indonesia">Bahasa Indonesia</option>
+                <option value="IPS">IPS</option>
+                <option value="Bahasa Inggris">Bahasa Inggris</option>
+            </select>
+        </div>
+        <div>
+            <select id="mode" onchange="toggleModeFields()">
+                <option value="chapter">Per Bab Spesifik</option>
+                <option value="sem1">Seluruh Bab Semester 1</option>
+                <option value="sem2">Seluruh Bab Semester 2</option>
+                <option value="full">Full Year (Sem 1 & 2)</option>
+            </select>
+        </div>
+        <div id="chapterFields">
+            <select id="semester"><option value="1">Semester 1</option><option value="2">Semester 2</option></select>
+            <input type="number" id="chapter" value="1" placeholder="Nomor Bab">
+        </div>
+        <br><br>
+        <button onclick="createRoom()">🚀 Buka Room Kuis</button>
+    </div>
+
+    <div class="card" id="lobbyView" style="display:none;">
+        <h2>Buka Website & Masukkan PIN:</h2>
+        <div class="pin-box" id="pinDisplay">------</div>
+        <h3>Pemain Terhubung (<span id="playerCount">0</span>):</h3>
+        <div class="player-list" id="playerList"></div>
+        <button onclick="startGame()">▶️ MULAI GAME</button>
+    </div>
+
+    <div class="card" id="gameView" style="display:none;">
+        <h3 id="questionMeta">Soal 1 / 10</h3>
+        <h1 id="questionText">Pertanyaan...</h1>
+        <div class="options-grid">
+            <div class="option-box opt-0" id="opt0">A</div>
+            <div class="option-box opt-1" id="opt1">B</div>
+            <div class="option-box opt-2" id="opt2">C</div>
+            <div class="option-box opt-3" id="opt3">D</div>
+        </div>
+    </div>
+
+    <div class="card" id="leaderboardView" style="display:none;">
+        <h1>🏆 Papan Skor / Leaderboard</h1>
+        <div class="leaderboard-list" id="leaderboardList"></div>
+    </div>
+
+    <script>
+        let ws;
+        function toggleModeFields() {
+            const mode = document.getElementById('mode').value;
+            document.getElementById('chapterFields').style.display = mode === 'chapter' ? 'block' : 'none';
+        }
+
+        function createRoom() {
+            const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+            ws = new WebSocket(`${protocol}//${window.location.host}/ws`);
+
+            ws.onopen = () => {
+                ws.send(JSON.stringify({
+                    type: "CREATE_ROOM",
+                    payload: {
+                        grade: document.getElementById('grade').value,
+                        subject: document.getElementById('subject').value,
+                        mode: document.getElementById('mode').value,
+                        semester: parseInt(document.getElementById('semester').value),
+                        chapter: parseInt(document.getElementById('chapter').value)
+                    }
+                }));
+            };
+
+            ws.onmessage = (e) => {
+                const msg = JSON.parse(e.data);
+                if(msg.type === "ROOM_CREATED") {
+                    document.getElementById('setupView').style.display = 'none';
+                    document.getElementById('lobbyView').style.display = 'block';
+                    document.getElementById('pinDisplay').innerText = msg.payload.pin;
+                } else if(msg.type === "PLAYER_JOINED" || msg.type === "PLAYER_LEFT") {
+                    updatePlayerList(msg.payload.players);
+                } else if(msg.type === "NEW_QUESTION") {
+                    showQuestion(msg.payload);
+                } else if(msg.type === "QUESTION_END") {
+                    showLeaderboard(msg.payload.leaderboard);
+                } else if(msg.type === "GAME_OVER") {
+                    showLeaderboard(msg.payload.leaderboard, true);
+                } else if(msg.type === "ERROR") {
+                    alert(msg.payload);
+                }
+            };
+        }
+
+        function updatePlayerList(players) {
+            const list = document.getElementById('playerList');
+            list.innerHTML = '';
+            const keys = Object.keys(players);
+            document.getElementById('playerCount').innerText = keys.length;
+            keys.forEach(p => {
+                list.innerHTML += `<div class="player-chip">${p}</div>`;
+            });
+        }
+
+        function startGame() {
+            ws.send(JSON.stringify({type: "START_GAME"}));
+        }
+
+        function showQuestion(q) {
+            document.getElementById('lobbyView').style.display = 'none';
+            document.getElementById('leaderboardView').style.display = 'none';
+            document.getElementById('gameView').style.display = 'block';
+
+            document.getElementById('questionMeta').innerText = `Soal ${q.index} dari ${q.total}`;
+            document.getElementById('questionText').innerText = q.question;
+            document.getElementById('opt0').innerText = 'A. ' + q.options[0];
+            document.getElementById('opt1').innerText = 'B. ' + q.options[1];
+            document.getElementById('opt2').innerText = 'C. ' + q.options[2];
+            document.getElementById('opt3').innerText = 'D. ' + q.options[3];
+        }
+
+        function showLeaderboard(lb, isFinal=false) {
+            document.getElementById('gameView').style.display = 'none';
+            document.getElementById('leaderboardView').style.display = 'block';
+            
+            const list = document.getElementById('leaderboardList');
+            list.innerHTML = isFinal ? "<h2>🎉 PEMENANG AKHIR 🎉</h2>" : "";
+            lb.forEach((p, i) => {
+                list.innerHTML += `<p><b>#${i+1} ${p.name}</b>: ${p.score} poin</p>`;
+            });
+        }
+    </script>
+</body>
+</html>
